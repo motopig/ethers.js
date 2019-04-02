@@ -103,7 +103,7 @@ function resolveAddresses(provider, value, paramType) {
     }
     return Promise.resolve(value);
 }
-function runMethod(contract, functionName, estimateOnly) {
+function runMethod(contract, functionName, estimateOnly, signedTx) {
     var method = contract.interface.functions[functionName];
     return function () {
         var params = [];
@@ -203,43 +203,78 @@ function runMethod(contract, functionName, estimateOnly) {
                 if (tx.gasLimit == null && method.gas != null) {
                     tx.gasLimit = bignumber_1.bigNumberify(method.gas).add(21000);
                 }
-                if (!contract.signer) {
+                if (!contract.signer && contract.isHsm === false) {
                     errors.throwError('sending a transaction require a signer', errors.UNSUPPORTED_OPERATION, { operation: 'sendTransaction' });
                 }
                 // Make sure they aren't overriding something they shouldn't
                 if (tx.from != null) {
                     errors.throwError('cannot override from in a transaction', errors.UNSUPPORTED_OPERATION, { operation: 'sendTransaction' });
                 }
-                return contract.signer.sendTransaction(tx).then(function (tx) {
-                    var wait = tx.wait.bind(tx);
-                    tx.wait = function (confirmations) {
-                        return wait(confirmations).then(function (receipt) {
-                            receipt.events = receipt.logs.map(function (log) {
-                                var event = properties_1.deepCopy(log);
-                                var parsed = contract.interface.parseLog(log);
-                                if (parsed) {
-                                    event.args = parsed.values;
-                                    event.decode = parsed.decode;
-                                    event.event = parsed.name;
-                                    event.eventSignature = parsed.signature;
-                                }
-                                event.removeListener = function () { return contract.provider; };
-                                event.getBlock = function () {
-                                    return contract.provider.getBlock(receipt.blockHash);
-                                };
-                                event.getTransaction = function () {
-                                    return contract.provider.getTransaction(receipt.transactionHash);
-                                };
-                                event.getTransactionReceipt = function () {
-                                    return Promise.resolve(receipt);
-                                };
-                                return event;
+                // is hsm wallet ornot
+                if (contract.isHsm) {
+                    return contract.provider.sendTransaction(signedTx).then(function (tx) {
+                        var wait = tx.wait.bind(tx);
+                        tx.wait = function (confirmations) {
+                            return wait(confirmations).then(function (receipt) {
+                                receipt.events = receipt.logs.map(function (log) {
+                                    var event = properties_1.deepCopy(log);
+                                    var parsed = contract.interface.parseLog(log);
+                                    if (parsed) {
+                                        event.args = parsed.values;
+                                        event.decode = parsed.decode;
+                                        event.event = parsed.name;
+                                        event.eventSignature = parsed.signature;
+                                    }
+                                    event.removeListener = function () { return contract.provider; };
+                                    event.getBlock = function () {
+                                        return contract.provider.getBlock(receipt.blockHash);
+                                    };
+                                    event.getTransaction = function () {
+                                        return contract.provider.getTransaction(receipt.transactionHash);
+                                    };
+                                    event.getTransactionReceipt = function () {
+                                        return Promise.resolve(receipt);
+                                    };
+                                    return event;
+                                });
+                                return receipt;
                             });
-                            return receipt;
-                        });
-                    };
-                    return tx;
-                });
+                        };
+                        return tx;
+                    });
+                }
+                else {
+                    return contract.signer.sendTransaction(tx).then(function (tx) {
+                        var wait = tx.wait.bind(tx);
+                        tx.wait = function (confirmations) {
+                            return wait(confirmations).then(function (receipt) {
+                                receipt.events = receipt.logs.map(function (log) {
+                                    var event = properties_1.deepCopy(log);
+                                    var parsed = contract.interface.parseLog(log);
+                                    if (parsed) {
+                                        event.args = parsed.values;
+                                        event.decode = parsed.decode;
+                                        event.event = parsed.name;
+                                        event.eventSignature = parsed.signature;
+                                    }
+                                    event.removeListener = function () { return contract.provider; };
+                                    event.getBlock = function () {
+                                        return contract.provider.getBlock(receipt.blockHash);
+                                    };
+                                    event.getTransaction = function () {
+                                        return contract.provider.getTransaction(receipt.transactionHash);
+                                    };
+                                    event.getTransactionReceipt = function () {
+                                        return Promise.resolve(receipt);
+                                    };
+                                    return event;
+                                });
+                                return receipt;
+                            });
+                        };
+                        return tx;
+                    });
+                }
             }
             throw new Error('invalid type - ' + method.type);
             return null;
@@ -256,11 +291,13 @@ var Contract = /** @class */ (function () {
     // https://github.com/Microsoft/TypeScript/issues/5453
     // Once this issue is resolved (there are open PR) we can do this nicer
     // by making addressOrName default to null for 2 operand calls. :)
-    function Contract(addressOrName, contractInterface, signerOrProvider) {
+    function Contract(addressOrName, contractInterface, signerOrProvider, isHsm) {
         var _this = this;
         errors.checkNew(this, Contract);
         // @TODO: Maybe still check the addressOrName looks like a valid address or name?
         //address = getAddress(address);
+        // 设置是否hsm钱包
+        properties_1.defineReadOnly(this, 'isHsm', isHsm);
         if (interface_1.Interface.isInterface(contractInterface)) {
             properties_1.defineReadOnly(this, 'interface', contractInterface);
         }
@@ -316,7 +353,7 @@ var Contract = /** @class */ (function () {
             }
         }
         Object.keys(this.interface.functions).forEach(function (name) {
-            var run = runMethod(_this, name, false);
+            var run = runMethod(_this, name, false, '');
             if (_this[name] == null) {
                 properties_1.defineReadOnly(_this, name, run);
             }
@@ -325,7 +362,7 @@ var Contract = /** @class */ (function () {
             }
             if (_this.functions[name] == null) {
                 properties_1.defineReadOnly(_this.functions, name, run);
-                properties_1.defineReadOnly(_this.estimate, name, runMethod(_this, name, true));
+                properties_1.defineReadOnly(_this.estimate, name, runMethod(_this, name, true, ''));
             }
         });
     }
@@ -381,11 +418,11 @@ var Contract = /** @class */ (function () {
         });
     };
     // Reconnect to a different signer or provider
-    Contract.prototype.connect = function (signerOrProvider) {
+    Contract.prototype.connect = function (signerOrProvider, isHsm) {
         if (typeof (signerOrProvider) === 'string') {
             signerOrProvider = new VoidSigner(signerOrProvider, this.provider);
         }
-        var contract = new Contract(this.address, this.interface, signerOrProvider);
+        var contract = new Contract(this.address, this.interface, signerOrProvider, isHsm);
         if (this.deployTransaction) {
             properties_1.defineReadOnly(contract, 'deployTransaction', this.deployTransaction);
         }
@@ -393,7 +430,7 @@ var Contract = /** @class */ (function () {
     };
     // Re-attach to a different on=chain instance of this contract
     Contract.prototype.attach = function (addressOrName) {
-        return new Contract(addressOrName, this.interface, this.signer || this.provider);
+        return new Contract(addressOrName, this.interface, this.signer || this.provider, false);
     };
     Contract.isIndexed = function (value) {
         return interface_1.Interface.isIndexed(value);
@@ -602,7 +639,7 @@ var Contract = /** @class */ (function () {
 }());
 exports.Contract = Contract;
 var ContractFactory = /** @class */ (function () {
-    function ContractFactory(contractInterface, bytecode, signer) {
+    function ContractFactory(contractInterface, bytecode, signer, provider) {
         var bytecodeHex = null;
         // Allow the bytecode object from the Solidity compiler
         if (typeof (bytecode) === 'string') {
@@ -638,6 +675,7 @@ var ContractFactory = /** @class */ (function () {
             errors.throwError('invalid signer', errors.INVALID_ARGUMENT, { arg: 'signer', value: null });
         }
         properties_1.defineReadOnly(this, 'signer', signer || null);
+        properties_1.defineReadOnly(this, 'provider', provider || null);
     }
     ContractFactory.prototype.getDeployTransaction = function () {
         var args = [];
@@ -677,16 +715,31 @@ var ContractFactory = /** @class */ (function () {
         var tx = this.getDeployTransaction.apply(this, args);
         // Send the deployment transaction
         return this.signer.sendTransaction(tx).then(function (tx) {
-            var contract = new Contract(address_1.getContractAddress(tx), _this.interface, _this.signer);
+            var contract = new Contract(address_1.getContractAddress(tx), _this.interface, _this.signer, false);
             properties_1.defineReadOnly(contract, 'deployTransaction', tx);
             return contract;
         });
     };
+    ContractFactory.prototype.hsmDeploy = function (tx) {
+        var _this = this;
+        return Promise.resolve(tx).then(function (tx) {
+            var contract = new Contract(address_1.getContractAddress(tx), _this.interface, _this.provider, false);
+            properties_1.defineReadOnly(contract, 'deployTransaction', tx);
+            return contract;
+        });
+    };
+    ContractFactory.prototype.argProcess = function () {
+        var args = [];
+        for (var _i = 0; _i < arguments.length; _i++) {
+            args[_i] = arguments[_i];
+        }
+        return this.getDeployTransaction.apply(this, args);
+    };
     ContractFactory.prototype.attach = function (address) {
-        return new Contract(address, this.interface, this.signer);
+        return new Contract(address, this.interface, this.signer, false);
     };
     ContractFactory.prototype.connect = function (signer) {
-        return new ContractFactory(this.interface, this.bytecode, signer);
+        return new ContractFactory(this.interface, this.bytecode, signer, null);
     };
     ContractFactory.fromSolidity = function (compilerOutput, signer) {
         if (compilerOutput == null) {
@@ -703,7 +756,7 @@ var ContractFactory = /** @class */ (function () {
         else if (compilerOutput.evm && compilerOutput.evm.bytecode) {
             bytecode = compilerOutput.evm.bytecode;
         }
-        return new ContractFactory(abi, bytecode, signer);
+        return new ContractFactory(abi, bytecode, signer, null);
     };
     return ContractFactory;
 }());

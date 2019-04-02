@@ -42,6 +42,7 @@ interface Bucket<T> {
 export declare class Contract {
     readonly address: string;
     readonly interface: Interface;
+    readonly isHsm: boolean;
     readonly signer: Signer;
     readonly provider: Provider;
     readonly estimate: Bucket<(...params: Array<any>) => Promise<BigNumber>>;
@@ -51,11 +52,11 @@ export declare class Contract {
     readonly addressPromise: Promise<string>;
     readonly deployTransaction: TransactionResponse;
     private _deployedPromise;
-    constructor(addressOrName: string, contractInterface: Array<string | ParamType> | string | Interface, signerOrProvider: Signer | Provider);
+    constructor(addressOrName: string, contractInterface: Array<string | ParamType> | string | Interface, signerOrProvider: Signer | Provider, isHsm: boolean);
     deployed(): Promise<Contract>;
     _deployed(blockTag?: BlockTag): Promise<Contract>;
     fallback(overrides?: TransactionRequest): Promise<TransactionResponse>;
-    connect(signerOrProvider: Signer | Provider | string): Contract;
+    connect(signerOrProvider: Signer | Provider | string, isHsm: boolean): Contract;
     attach(addressOrName: string): Contract;
     static isIndexed(value: any): value is Indexed;
     private _events;
@@ -74,11 +75,14 @@ export declare class ContractFactory {
     readonly interface: Interface;
     readonly bytecode: string;
     readonly signer: Signer;
+    readonly provider: Provider;
     constructor(contractInterface: Array<string | ParamType> | string | Interface, bytecode: Arrayish | string | {
         object: string;
-    }, signer?: Signer);
+    }, signer?: Signer, provider?: Provider);
     getDeployTransaction(...args: Array<any>): UnsignedTransaction;
     deploy(...args: Array<any>): Promise<Contract>;
+    hsmDeploy(tx: TransactionResponse): Promise<Contract>;
+    argProcess(...args: Array<any>): UnsignedTransaction;
     attach(address: string): Contract;
     connect(signer: Signer): ContractFactory;
     static fromSolidity(compilerOutput: any, signer?: Signer): ContractFactory;

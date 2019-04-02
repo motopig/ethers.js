@@ -145,7 +145,7 @@ function resolveAddresses(provider: Provider, value: any, paramType: ParamType |
 
 type RunFunction = (...params: Array<any>) => Promise<any>;
 
-function runMethod(contract: Contract, functionName: string, estimateOnly: boolean): RunFunction {
+function runMethod(contract: Contract, functionName: string, estimateOnly: boolean, signedTx: string): RunFunction {
     let method = contract.interface.functions[functionName];
     return function(...params): Promise<any> {
         let tx: any = {}
@@ -261,7 +261,7 @@ function runMethod(contract: Contract, functionName: string, estimateOnly: boole
                     tx.gasLimit = bigNumberify(method.gas).add(21000);
                 }
 
-                if (!contract.signer) {
+                if (!contract.signer && contract.isHsm === false) {
                     errors.throwError('sending a transaction require a signer', errors.UNSUPPORTED_OPERATION, { operation: 'sendTransaction' })
                 }
 
@@ -270,42 +270,79 @@ function runMethod(contract: Contract, functionName: string, estimateOnly: boole
                     errors.throwError('cannot override from in a transaction', errors.UNSUPPORTED_OPERATION, { operation: 'sendTransaction' })
                 }
 
-                return contract.signer.sendTransaction(tx).then((tx) => {
-                    let wait = tx.wait.bind(tx);
+                // is hsm wallet ornot
+                if (contract.isHsm) {
+                    return contract.provider.sendTransaction(signedTx).then((tx) => {
+                        let wait = tx.wait.bind(tx);
 
-                    tx.wait = (confirmations?: number) => {
-                        return wait(confirmations).then((receipt: ContractReceipt) => {
-                            receipt.events = receipt.logs.map((log) => {
-                                 let event: Event = (<Event>deepCopy(log));
+                        tx.wait = (confirmations?: number) => {
+                            return wait(confirmations).then((receipt: ContractReceipt) => {
+                                receipt.events = receipt.logs.map((log) => {
+                                     let event: Event = (<Event>deepCopy(log));
 
-                                 let parsed = contract.interface.parseLog(log);
-                                 if (parsed) {
-                                     event.args = parsed.values;
-                                     event.decode = parsed.decode;
-                                     event.event = parsed.name;
-                                     event.eventSignature = parsed.signature;
-                                }
+                                     let parsed = contract.interface.parseLog(log);
+                                     if (parsed) {
+                                         event.args = parsed.values;
+                                         event.decode = parsed.decode;
+                                         event.event = parsed.name;
+                                         event.eventSignature = parsed.signature;
+                                    }
 
-                                event.removeListener = () => { return contract.provider; }
-                                event.getBlock = () => {
-                                    return contract.provider.getBlock(receipt.blockHash);
-                                }
-                                event.getTransaction = () => {
-                                    return contract.provider.getTransaction(receipt.transactionHash);
-                                }
-                                event.getTransactionReceipt = () => {
-                                    return Promise.resolve(receipt);
-                                }
-
-                                return event;
+                                    event.removeListener = () => { return contract.provider; }
+                                    event.getBlock = () => {
+                                        return contract.provider.getBlock(receipt.blockHash);
+                                    }
+                                    event.getTransaction = () => {
+                                        return contract.provider.getTransaction(receipt.transactionHash);
+                                    }
+                                    event.getTransactionReceipt = () => {
+                                        return Promise.resolve(receipt);
+                                    }
+                                    return event;
+                                });
+                                return receipt;
                             });
+                        };
+                        return tx;
+                    });
+                } else {
+                    return contract.signer.sendTransaction(tx).then((tx) => {
+                        let wait = tx.wait.bind(tx);
 
-                            return receipt;
-                        });
-                    };
+                        tx.wait = (confirmations?: number) => {
+                            return wait(confirmations).then((receipt: ContractReceipt) => {
+                                receipt.events = receipt.logs.map((log) => {
+                                     let event: Event = (<Event>deepCopy(log));
 
-                    return tx;
-                });
+                                     let parsed = contract.interface.parseLog(log);
+                                     if (parsed) {
+                                         event.args = parsed.values;
+                                         event.decode = parsed.decode;
+                                         event.event = parsed.name;
+                                         event.eventSignature = parsed.signature;
+                                    }
+
+                                    event.removeListener = () => { return contract.provider; }
+                                    event.getBlock = () => {
+                                        return contract.provider.getBlock(receipt.blockHash);
+                                    }
+                                    event.getTransaction = () => {
+                                        return contract.provider.getTransaction(receipt.transactionHash);
+                                    }
+                                    event.getTransactionReceipt = () => {
+                                        return Promise.resolve(receipt);
+                                    }
+
+                                    return event;
+                                });
+
+                                return receipt;
+                            });
+                        };
+
+                        return tx;
+                    });
+                }
             }
 
             throw new Error('invalid type - ' + method.type);
@@ -342,6 +379,7 @@ type _Event = {
 export class Contract {
     readonly address: string;
     readonly interface: Interface;
+    readonly isHsm: boolean;
 
     readonly signer: Signer;
     readonly provider: Provider;
@@ -364,11 +402,14 @@ export class Contract {
     // Once this issue is resolved (there are open PR) we can do this nicer
     // by making addressOrName default to null for 2 operand calls. :)
 
-    constructor(addressOrName: string, contractInterface: Array<string | ParamType> | string | Interface, signerOrProvider: Signer | Provider) {
+    constructor(addressOrName: string, contractInterface: Array<string | ParamType> | string | Interface, signerOrProvider: Signer | Provider, isHsm: boolean) {
         errors.checkNew(this, Contract);
 
         // @TODO: Maybe still check the addressOrName looks like a valid address or name?
         //address = getAddress(address);
+
+        // 设置是否hsm钱包
+        defineReadOnly(this, 'isHsm', isHsm);
 
         if (Interface.isInterface(contractInterface)) {
             defineReadOnly(this, 'interface', contractInterface);
@@ -421,7 +462,7 @@ export class Contract {
         }
 
         Object.keys(this.interface.functions).forEach((name) => {
-            let run = runMethod(this, name, false);
+            let run = runMethod(this, name, false, '');
 
             if ((<any>this)[name] == null) {
                 defineReadOnly(this, name, run);
@@ -431,7 +472,7 @@ export class Contract {
 
             if (this.functions[name] == null) {
                 defineReadOnly(this.functions, name, run);
-                defineReadOnly(this.estimate, name, runMethod(this, name, true));
+                defineReadOnly(this.estimate, name, runMethod(this, name, true, ''));
             }
         });
     }
@@ -495,12 +536,12 @@ export class Contract {
     }
 
     // Reconnect to a different signer or provider
-    connect(signerOrProvider: Signer | Provider | string): Contract {
+    connect(signerOrProvider: Signer | Provider | string, isHsm: boolean): Contract {
         if (typeof(signerOrProvider) === 'string') {
             signerOrProvider = new VoidSigner(signerOrProvider, this.provider);
         }
 
-        let contract = new Contract(this.address, this.interface, signerOrProvider);
+        let contract = new Contract(this.address, this.interface, signerOrProvider, isHsm);
         if (this.deployTransaction) {
             defineReadOnly(contract, 'deployTransaction', this.deployTransaction);
         }
@@ -509,7 +550,7 @@ export class Contract {
 
     // Re-attach to a different on=chain instance of this contract
     attach(addressOrName: string): Contract {
-        return new Contract(addressOrName, this.interface, this.signer || this.provider);
+        return new Contract(addressOrName, this.interface, this.signer || this.provider, false);
     }
 
     static isIndexed(value: any): value is Indexed {
@@ -743,8 +784,9 @@ export class ContractFactory {
     readonly interface: Interface;
     readonly bytecode: string;
     readonly signer: Signer;
+    readonly provider: Provider;
 
-    constructor(contractInterface: Array<string | ParamType> | string | Interface, bytecode: Arrayish | string | { object: string }, signer?: Signer) {
+    constructor(contractInterface: Array<string | ParamType> | string | Interface, bytecode: Arrayish | string | { object: string }, signer?: Signer, provider?: Provider) {
 
         let bytecodeHex: string = null;
 
@@ -785,6 +827,7 @@ export class ContractFactory {
         }
 
         defineReadOnly(this, 'signer', signer || null);
+        defineReadOnly(this, 'provider', provider || null);
     }
 
     getDeployTransaction(...args: Array<any>): UnsignedTransaction {
@@ -823,18 +866,30 @@ export class ContractFactory {
 
         // Send the deployment transaction
         return this.signer.sendTransaction(tx).then((tx) => {
-            let contract = new Contract(getContractAddress(tx), this.interface, this.signer);
+            let contract = new Contract(getContractAddress(tx), this.interface, this.signer, false);
             defineReadOnly(contract, 'deployTransaction', tx);
             return contract;
         });
     }
 
+    hsmDeploy(tx: TransactionResponse): Promise<Contract> {
+        return Promise.resolve(tx).then((tx) => {
+            let contract = new Contract(getContractAddress(tx), this.interface, this.provider, false);
+            defineReadOnly(contract, 'deployTransaction', tx);
+            return contract;
+        });
+    }
+
+    argProcess(...args: Array<any>): UnsignedTransaction {
+        return this.getDeployTransaction(...args);
+    }
+
     attach(address: string): Contract {
-        return new Contract(address, this.interface, this.signer);
+        return new Contract(address, this.interface, this.signer, false);
     }
 
     connect(signer: Signer) {
-        return new ContractFactory(this.interface, this.bytecode, signer);
+        return new ContractFactory(this.interface, this.bytecode, signer, null);
     }
 
     static fromSolidity(compilerOutput: any, signer?: Signer): ContractFactory {
@@ -856,7 +911,7 @@ export class ContractFactory {
         }
 
 
-        return new ContractFactory(abi, bytecode, signer);
+        return new ContractFactory(abi, bytecode, signer, null);
     }
 }
 

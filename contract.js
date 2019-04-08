@@ -103,14 +103,20 @@ function resolveAddresses(provider, value, paramType) {
     }
     return Promise.resolve(value);
 }
-function runMethod(contract, functionName, estimateOnly, signedTx) {
+function runMethod(contract, functionName, estimateOnly) {
     var method = contract.interface.functions[functionName];
     return function () {
         var params = [];
         for (var _i = 0; _i < arguments.length; _i++) {
             params[_i] = arguments[_i];
         }
+        console.log(params);
         var tx = {};
+        var signedTx = '';
+        // last param is signedTx made by remote hsm wallet
+        signedTx = params[params.length - 1];
+        // remove signedTx param
+        params.splice(params.length - 1, 1);
         var blockTag = null;
         // If 1 extra parameter was passed in, it contains overrides
         if (params.length === method.inputs.length + 1 && typeof (params[params.length - 1]) === 'object') {
@@ -126,6 +132,9 @@ function runMethod(contract, functionName, estimateOnly, signedTx) {
                 }
             }
         }
+        console.log(params.length);
+        console.log(method.inputs.length);
+        return;
         if (params.length != method.inputs.length) {
             throw new Error('incorrect number of arguments');
         }
@@ -135,9 +144,14 @@ function runMethod(contract, functionName, estimateOnly, signedTx) {
                 errors.throwError('cannot override ' + key, errors.UNSUPPORTED_OPERATION, { operation: key });
             }
         });
-        tx.to = contract._deployed(blockTag).then(function () {
-            return contract.addressPromise;
-        });
+        if (contract.isHsm && method.type == 'transaction') {
+            tx.to = params[0]; // fixed....
+        }
+        else {
+            tx.to = contract._deployed(blockTag).then(function () {
+                return contract.addressPromise;
+            });
+        }
         return resolveAddresses(contract.provider, params, method.inputs).then(function (params) {
             tx.data = method.encode(params);
             if (method.type === 'call') {
@@ -353,7 +367,7 @@ var Contract = /** @class */ (function () {
             }
         }
         Object.keys(this.interface.functions).forEach(function (name) {
-            var run = runMethod(_this, name, false, '');
+            var run = runMethod(_this, name, false);
             if (_this[name] == null) {
                 properties_1.defineReadOnly(_this, name, run);
             }
@@ -362,7 +376,7 @@ var Contract = /** @class */ (function () {
             }
             if (_this.functions[name] == null) {
                 properties_1.defineReadOnly(_this.functions, name, run);
-                properties_1.defineReadOnly(_this.estimate, name, runMethod(_this, name, true, ''));
+                properties_1.defineReadOnly(_this.estimate, name, runMethod(_this, name, true));
             }
         });
     }

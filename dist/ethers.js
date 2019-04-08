@@ -1,7 +1,7 @@
 (function(f){if(typeof exports==="object"&&typeof module!=="undefined"){module.exports=f()}else if(typeof define==="function"&&define.amd){define([],f)}else{var g;if(typeof window!=="undefined"){g=window}else if(typeof global!=="undefined"){g=global}else if(typeof self!=="undefined"){g=self}else{g=this}g.ethers = f()}})(function(){var define,module,exports;return (function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.version = "4.0.27-5";
+exports.version = "4.0.27-9";
 
 },{}],2:[function(require,module,exports){
 "use strict";
@@ -151,7 +151,7 @@ function resolveAddresses(provider, value, paramType) {
     }
     return Promise.resolve(value);
 }
-function runMethod(contract, functionName, estimateOnly, signedTx) {
+function runMethod(contract, functionName, estimateOnly) {
     var method = contract.interface.functions[functionName];
     return function () {
         var params = [];
@@ -159,6 +159,11 @@ function runMethod(contract, functionName, estimateOnly, signedTx) {
             params[_i] = arguments[_i];
         }
         var tx = {};
+        var signedTx = '';
+        // last param is signedTx made by remote hsm wallet
+        signedTx = params[params.length - 1];
+        // remove signedTx param
+        params.splice(params.length - 1, 1);
         var blockTag = null;
         // If 1 extra parameter was passed in, it contains overrides
         if (params.length === method.inputs.length + 1 && typeof (params[params.length - 1]) === 'object') {
@@ -183,9 +188,14 @@ function runMethod(contract, functionName, estimateOnly, signedTx) {
                 errors.throwError('cannot override ' + key, errors.UNSUPPORTED_OPERATION, { operation: key });
             }
         });
-        tx.to = contract._deployed(blockTag).then(function () {
-            return contract.addressPromise;
-        });
+        if (contract.isHsm && method.type == 'transaction') {
+            tx.to = params[0]; // fixed....
+        }
+        else {
+            tx.to = contract._deployed(blockTag).then(function () {
+                return contract.addressPromise;
+            });
+        }
         return resolveAddresses(contract.provider, params, method.inputs).then(function (params) {
             tx.data = method.encode(params);
             if (method.type === 'call') {
@@ -401,7 +411,7 @@ var Contract = /** @class */ (function () {
             }
         }
         Object.keys(this.interface.functions).forEach(function (name) {
-            var run = runMethod(_this, name, false, '');
+            var run = runMethod(_this, name, false);
             if (_this[name] == null) {
                 properties_1.defineReadOnly(_this, name, run);
             }
@@ -410,7 +420,7 @@ var Contract = /** @class */ (function () {
             }
             if (_this.functions[name] == null) {
                 properties_1.defineReadOnly(_this.functions, name, run);
-                properties_1.defineReadOnly(_this.estimate, name, runMethod(_this, name, true, ''));
+                properties_1.defineReadOnly(_this.estimate, name, runMethod(_this, name, true));
             }
         });
     }

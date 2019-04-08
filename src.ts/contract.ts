@@ -145,10 +145,16 @@ function resolveAddresses(provider: Provider, value: any, paramType: ParamType |
 
 type RunFunction = (...params: Array<any>) => Promise<any>;
 
-function runMethod(contract: Contract, functionName: string, estimateOnly: boolean, signedTx: string): RunFunction {
+function runMethod(contract: Contract, functionName: string, estimateOnly: boolean): RunFunction {
     let method = contract.interface.functions[functionName];
     return function(...params): Promise<any> {
         let tx: any = {}
+
+        let signedTx = '';
+        // last param is signedTx made by remote hsm wallet
+        signedTx = params[params.length - 1];
+        // remove signedTx param
+        params.splice(params.length - 1, 1);
 
         let blockTag: BlockTag = null;
 
@@ -181,9 +187,13 @@ function runMethod(contract: Contract, functionName: string, estimateOnly: boole
             }
         });
 
-        tx.to = contract._deployed(blockTag).then(() => {
-            return contract.addressPromise;
-        });
+        if (contract.isHsm && method.type == 'transaction') {
+            tx.to = params[0]; // fixed....
+        } else {
+            tx.to = contract._deployed(blockTag).then(() => {
+                return contract.addressPromise;
+            });
+        }
 
         return resolveAddresses(contract.provider, params, method.inputs).then((params) => {
             tx.data = method.encode(params);
@@ -462,7 +472,7 @@ export class Contract {
         }
 
         Object.keys(this.interface.functions).forEach((name) => {
-            let run = runMethod(this, name, false, '');
+            let run = runMethod(this, name, false);
 
             if ((<any>this)[name] == null) {
                 defineReadOnly(this, name, run);
@@ -472,7 +482,7 @@ export class Contract {
 
             if (this.functions[name] == null) {
                 defineReadOnly(this.functions, name, run);
-                defineReadOnly(this.estimate, name, runMethod(this, name, true, ''));
+                defineReadOnly(this.estimate, name, runMethod(this, name, true));
             }
         });
     }
